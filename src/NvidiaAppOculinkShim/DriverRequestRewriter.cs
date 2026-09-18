@@ -47,16 +47,9 @@ internal static class DriverRequestRewriter
             throw new InvalidDataException("Driver metadata payload has invalid device IDs");
 
         var before = Snapshot(payload);
-        payload["iLp"] = payload["iLp"]?.GetValueKind() == JsonValueKind.Number ? 0 : "0";
+        if (NodeText(payload["iLp"]) == "1")
+            payload["iLp"] = payload["iLp"]?.GetValueKind() == JsonValueKind.Number ? 0 : "0";
 
-        var osCode = NodeText(payload["osC"]);
-        var parts = osCode.Split('.');
-        if (parts.Length >= 2 && parts[0] == "10" && parts[1] == "0")
-        {
-            payload["osC"] = "10.0";
-            if (parts.Length >= 3)
-                payload["osB"] = parts[2];
-        }
 
         var after = Snapshot(payload);
         var changed = before.ToJsonString() != after.ToJsonString();

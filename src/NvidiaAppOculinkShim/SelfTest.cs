@@ -21,8 +21,8 @@ internal static class SelfTest
         Require(result.Changed, "expected request to change");
         Require(result.Route == "driver-recommendation", "unexpected route");
         Require(result.After?["iLp"]?.GetValue<string>() == "0", "iLp was not normalized");
-        Require(result.After?["osC"]?.GetValue<string>() == "10.0", "osC was not normalized");
-        Require(result.After?["osB"]?.GetValue<string>() == "26200", "osB was not derived");
+        Require(result.After?["osC"]?.GetValue<string>() == "10.0.26200", "osC was modified");
+        Require(result.After?["osB"]?.GetValue<string>() == "8973", "osB was modified");
         Require(result.Path.Contains("610.74", StringComparison.Ordinal),
             "unrelated GFPV field was not preserved");
 
