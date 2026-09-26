@@ -122,8 +122,8 @@ namespace NvidiaAppOculinkLauncher
             lines.Add("# SIG # Begin signature block");
             lines.Add("# ignored-signature-data");
             MaintenanceManifest manifest = MaintenanceManifest.Parse(lines);
-            Require(manifest.Entries.Count == 9,
-                "Manifest did not contain nine exact payload entries.");
+            Require(manifest.Entries.Count == 10,
+                "Manifest did not contain ten exact payload entries.");
 
             var missing = new List<string>(lines);
             missing.RemoveAt(3);

@@ -27,6 +27,7 @@ namespace NvidiaAppOculinkLauncher
 
         internal static readonly string[] RequiredRelativePaths =
         {
+            "AutoRepair-NvidiaAppOculinkShim.ps1",
             "Install-NvidiaAppOculinkShim.ps1",
             "Migrate-V3ToV4.ps1",
             "NvidiaAppOculinkShim.Common.psm1",

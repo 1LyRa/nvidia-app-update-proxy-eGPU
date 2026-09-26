@@ -34,6 +34,9 @@ $configPath = Join-Path $installRoot 'config.json'
 $serviceExePath = Join-Path $installRoot 'NvidiaAppOculinkShim.exe'
 $pidPath = Join-Path $runtimeRoot 'shim.pid'
 $taskName = 'NVIDIA App OCuLink Driver Shim'
+$autoRepairTaskName = 'NVIDIA App eGPU Update Bridge Auto Repair'
+$autoRepairSourcePath = Join-Path $PSScriptRoot 'AutoRepair-NvidiaAppOculinkShim.ps1'
+$autoRepairScriptPath = Join-Path $installRoot 'AutoRepair-NvidiaAppOculinkShim.ps1'
 $serviceName = 'NvidiaAppOculinkShim'
 $nvidiaLocalSystemService = 'NvContainerLocalSystem'
 $officialBaseUrl = 'https://gfwsl.geforce.com/'
@@ -270,6 +273,67 @@ function Set-SecureRuntimeRoot {
     Set-Acl -LiteralPath $LiteralPath -AclObject $acl
 }
 
+function Register-AutoRepairTask {
+    $powerShellPath = Join-Path $env:SystemRoot (
+        'System32\WindowsPowerShell\v1.0\powershell.exe'
+    )
+
+    if (-not (
+        Test-Path -LiteralPath $powerShellPath -PathType Leaf
+    )) {
+        throw "Windows PowerShell was not found: $powerShellPath"
+    }
+
+    $action = New-ScheduledTaskAction `
+        -Execute $powerShellPath `
+        -Argument (
+            '-NoLogo -NoProfile -NonInteractive ' +
+            '-ExecutionPolicy Bypass -File "' +
+            $autoRepairScriptPath +
+            '"'
+        )
+
+    $startupTrigger =
+        New-ScheduledTaskTrigger -AtStartup
+
+    $intervalTrigger =
+        New-ScheduledTaskTrigger `
+            -Once `
+            -At (Get-Date).AddMinutes(1) `
+            -RepetitionInterval (New-TimeSpan -Minutes 15) `
+            -RepetitionDuration (New-TimeSpan -Days 3650)
+
+    $principal =
+        New-ScheduledTaskPrincipal `
+            -UserId 'SYSTEM' `
+            -LogonType ServiceAccount `
+            -RunLevel Highest
+
+    $settings =
+        New-ScheduledTaskSettingsSet `
+            -StartWhenAvailable `
+            -AllowStartIfOnBatteries `
+            -DontStopIfGoingOnBatteries `
+            -MultipleInstances IgnoreNew `
+            -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+
+    Register-ScheduledTask `
+        -TaskName $autoRepairTaskName `
+        -Action $action `
+        -Trigger @(
+            $startupTrigger,
+            $intervalTrigger
+        ) `
+        -Principal $principal `
+        -Settings $settings `
+        -Description (
+            'Restores the NVIDIA App metadata redirect ' +
+            'after NVIDIA App updates.'
+        ) `
+        -ErrorAction Stop |
+        Out-Null
+}
+
 function Stop-V4ServiceAndProcess {
     try {
         & sc.exe stop $serviceName | Out-Null
@@ -378,6 +442,20 @@ function Remove-V4Service {
     }
 }
 
+
+function Stop-NvidiaUiProcesses {
+    $sessionId = (Get-Process -Id $PID).SessionId
+
+    foreach ($attempt in 1..12) {
+        Get-Process `
+            -Name 'NVIDIA App' `
+            -ErrorAction SilentlyContinue |
+            Where-Object { $_.SessionId -eq $sessionId } |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+
+        Start-Sleep -Milliseconds 250
+    }
+}
 function Stop-NvidiaLocalizedConfigService {
     Stop-Service `
         -Name $nvidiaLocalSystemService `
@@ -390,23 +468,30 @@ function Stop-NvidiaLocalizedConfigService {
 }
 
 function Start-NvidiaLocalizedConfigService {
-    Start-Service -Name $nvidiaLocalSystemService -ErrorAction Stop
+    Start-Service `
+        -Name $nvidiaLocalSystemService `
+        -ErrorAction Stop
+
     (Get-Service -Name $nvidiaLocalSystemService).WaitForStatus(
         [ServiceProcess.ServiceControllerStatus]::Running,
         [TimeSpan]::FromSeconds(20)
     )
+
+    Start-Sleep -Milliseconds 750
+    Stop-NvidiaUiProcesses
 }
 
 function Get-ShimMetadata {
     param([string]$BaseUrl, [string[]]$DeviceIds)
 
+    $windowsVersion = [Environment]::OSVersion.Version
     $payload = [ordered]@{
         gcV = '11.0.8.299'
         lg = '1033'
         gLg = 'en-US'
         dIDa = $DeviceIds
-        osC = '10.0.26200'
-        osB = '8973'
+        osC = "$($windowsVersion.Major).$($windowsVersion.Minor)"
+        osB = [string]$windowsVersion.Build
         is6 = '1'
         GFPV = '0'
         dch = '1'
@@ -481,7 +566,6 @@ if (-not $ElevatedPhase) {
         throw 'The installed helper is not healthy.'
     }
 
-    Start-Process -FilePath "$env:WINDIR\explorer.exe" -ArgumentList "`"$appExe`""
     $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
     Write-Output 'Installed the NVIDIA App OCuLink Update Bridge service.'
     Write-Output "NVIDIA metadata check returned: $($state.verifiedLatestVersion)"
@@ -498,6 +582,7 @@ if (-not (Test-IsAdministrator)) {
 $mutex = [Threading.Mutex]::new($false, $mutexName)
 $lockAcquired = $false
 $serviceRegistered = $false
+$autoRepairTaskRegistered = $false
 $profileReplaced = $false
 $temporaryProfile = $null
 $profileAtomicBackup = $null
@@ -528,6 +613,11 @@ try {
         throw "NVIDIA App executable was not found: $appExe"
     }
 
+    if (-not (
+        Test-Path -LiteralPath $autoRepairSourcePath -PathType Leaf
+    )) {
+        throw "Auto-repair script was not found: $autoRepairSourcePath"
+    }
     $resolvedServiceBinary =
         Resolve-ServiceBinary -RequestedPath $ServiceBinary
 
@@ -552,6 +642,13 @@ try {
     if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
         throw "The legacy scheduled task '$taskName' still exists."
     }
+    if (
+        Get-ScheduledTask `
+            -TaskName $autoRepairTaskName `
+            -ErrorAction SilentlyContinue
+    ) {
+        throw "The auto-repair scheduled task '$autoRepairTaskName' already exists."
+    }
     if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
         throw "The Windows service '$serviceName' already exists."
     }
@@ -565,6 +662,26 @@ try {
         -LiteralPath $resolvedServiceBinary `
         -Destination $serviceExePath `
         -Force
+
+    Copy-Item `
+        -LiteralPath $autoRepairSourcePath `
+        -Destination $autoRepairScriptPath `
+        -Force
+
+    if (
+        (
+            Get-FileHash `
+                -LiteralPath $autoRepairScriptPath `
+                -Algorithm SHA256
+        ).Hash -ne
+        (
+            Get-FileHash `
+                -LiteralPath $autoRepairSourcePath `
+                -Algorithm SHA256
+        ).Hash
+    ) {
+        throw 'The installed auto-repair script failed SHA-256 verification.'
+    }
 
     $tokenBytes = New-Object byte[] 32
     $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
@@ -833,8 +950,24 @@ try {
     $profileAtomicBackup = $null
     Remove-Item -LiteralPath $localizedAtomicBackup -Force
     $localizedAtomicBackup = $null
+
+    Register-AutoRepairTask
+    $autoRepairTaskRegistered = $true
 } catch {
     $failure = $_
+
+    if ($autoRepairTaskRegistered) {
+        Stop-ScheduledTask `
+            -TaskName $autoRepairTaskName `
+            -ErrorAction SilentlyContinue
+
+        Unregister-ScheduledTask `
+            -TaskName $autoRepairTaskName `
+            -Confirm:$false `
+            -ErrorAction SilentlyContinue
+
+        $autoRepairTaskRegistered = $false
+    }
     $localizedRestored = -not $localizedConfigReplaced
     if (
         $localizedConfigReplaced -and

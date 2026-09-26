@@ -5,7 +5,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$appExe = 'C:\Program Files\NVIDIA Corporation\NVIDIA App\CEF\NVIDIA App.exe'
 $programData = [Environment]::GetFolderPath(
     [Environment+SpecialFolder]::CommonApplicationData
 )
@@ -33,6 +32,7 @@ $proxyPath = Join-Path $installRoot 'proxy.mjs'
 $serviceExePath = Join-Path $installRoot 'NvidiaAppOculinkShim.exe'
 $pidPath = Join-Path $runtimeRoot 'shim.pid'
 $taskName = 'NVIDIA App OCuLink Driver Shim'
+$autoRepairTaskName = 'NVIDIA App eGPU Update Bridge Auto Repair'
 $serviceName = 'NvidiaAppOculinkShim'
 $nvidiaLocalSystemService = 'NvContainerLocalSystem'
 $officialBaseUrl = 'https://gfwsl.geforce.com/'
@@ -248,6 +248,19 @@ function Write-ProtectedTextAtomically {
     }
 }
 
+function Stop-NvidiaUiProcesses {
+    $sessionId = (Get-Process -Id $PID).SessionId
+
+    foreach ($attempt in 1..12) {
+        Get-Process `
+            -Name 'NVIDIA App' `
+            -ErrorAction SilentlyContinue |
+            Where-Object { $_.SessionId -eq $sessionId } |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+
+        Start-Sleep -Milliseconds 250
+    }
+}
 function Stop-NvidiaLocalizedConfigService {
     $service = Get-Service -Name $nvidiaLocalSystemService -ErrorAction Stop
     if ($service.Status -ne [ServiceProcess.ServiceControllerStatus]::Stopped) {
@@ -261,15 +274,30 @@ function Stop-NvidiaLocalizedConfigService {
 }
 
 function Start-NvidiaLocalizedConfigService {
-    $service = Get-Service -Name $nvidiaLocalSystemService -ErrorAction Stop
-    if ($service.Status -ne [ServiceProcess.ServiceControllerStatus]::Running) {
-        Start-Service -Name $nvidiaLocalSystemService -ErrorAction Stop
+    $service = Get-Service `
+        -Name $nvidiaLocalSystemService `
+        -ErrorAction Stop
+
+    if (
+        $service.Status -ne
+        [ServiceProcess.ServiceControllerStatus]::Running
+    ) {
+        Start-Service `
+            -Name $nvidiaLocalSystemService `
+            -ErrorAction Stop
     }
-    $service = Get-Service -Name $nvidiaLocalSystemService -ErrorAction Stop
+
+    $service = Get-Service `
+        -Name $nvidiaLocalSystemService `
+        -ErrorAction Stop
+
     $service.WaitForStatus(
         [ServiceProcess.ServiceControllerStatus]::Running,
         [TimeSpan]::FromSeconds(30)
     )
+
+    Start-Sleep -Milliseconds 750
+    Stop-NvidiaUiProcesses
 }
 
 function Restart-NvidiaLocalizedConfigService {
@@ -474,9 +502,6 @@ if (-not $ElevatedPhase) {
         }
         throw "Uninstallation failed in the elevated phase.`n$detail"
     }
-    if (Test-Path -LiteralPath $appExe) {
-        Start-Process -FilePath $appExe
-    }
     Write-Output 'Removed the NVIDIA App OCuLink metadata redirection.'
     Write-Output "The protected backup remains at $installRoot."
     return
@@ -501,6 +526,9 @@ $originalStateText = $null
 $stateWriteAttempted = $false
 $rollbackSucceeded = $true
 $shimHost = $null
+$autoRepairTaskWasPresent = $false
+$autoRepairTaskWasEnabled = $false
+$autoRepairTaskDisabled = $false
 
 try {
     $lockAcquired = $mutex.WaitOne(0)
@@ -517,12 +545,42 @@ try {
     if ($state.status -eq 'uninstalled') {
         $shimHost = Get-ShimHost -AllowMissing
         Stop-ShimHostAndProcess -HostInfo $shimHost
+        Stop-ScheduledTask `
+            -TaskName $autoRepairTaskName `
+            -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask `
+            -TaskName $autoRepairTaskName `
+            -Confirm:$false `
+            -ErrorAction SilentlyContinue
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
         & sc.exe delete $serviceName | Out-Null
         return
     }
     if ($state.status -notin @('installed', 'installing', 'upgrading')) {
         throw "The shim state is '$($state.status)' and cannot be automatically uninstalled."
+    }
+    $autoRepairTask =
+        Get-ScheduledTask `
+            -TaskName $autoRepairTaskName `
+            -ErrorAction SilentlyContinue
+
+    if ($autoRepairTask) {
+        $autoRepairTaskWasPresent = $true
+        $autoRepairTaskWasEnabled =
+            [string]$autoRepairTask.State -ne 'Disabled'
+
+        if ($autoRepairTaskWasEnabled) {
+            Disable-ScheduledTask `
+                -TaskName $autoRepairTaskName `
+                -ErrorAction Stop |
+                Out-Null
+
+            $autoRepairTaskDisabled = $true
+        }
+
+        Stop-ScheduledTask `
+            -TaskName $autoRepairTaskName `
+            -ErrorAction SilentlyContinue
     }
 
     $localBaseUrl = [string]$state.localBaseUrl
@@ -868,6 +926,23 @@ try {
         Remove-Item -LiteralPath $localizedConfigAtomicBackup -Force -ErrorAction SilentlyContinue
         $localizedConfigAtomicBackup = $null
     }
+    Stop-ScheduledTask `
+        -TaskName $autoRepairTaskName `
+        -ErrorAction SilentlyContinue
+
+    Unregister-ScheduledTask `
+        -TaskName $autoRepairTaskName `
+        -Confirm:$false `
+        -ErrorAction SilentlyContinue
+
+    if (
+        Get-ScheduledTask `
+            -TaskName $autoRepairTaskName `
+            -ErrorAction SilentlyContinue
+    ) {
+        throw 'The auto-repair scheduled task could not be removed.'
+    }
+
     Remove-Item -LiteralPath (Join-Path $runtimeRoot 'uninstall-error.log') -Force -ErrorAction SilentlyContinue
 } catch {
     $failure = $_
@@ -910,6 +985,27 @@ try {
                 -Value $originalStateText `
                 -OperationName 'state.oculink-uninstall-rollback'
         } catch {
+            $rollbackSucceeded = $false
+        }
+    }
+    if (
+        $autoRepairTaskWasPresent -and
+        $autoRepairTaskWasEnabled -and
+        $autoRepairTaskDisabled
+    ) {
+        try {
+            if (
+                Get-ScheduledTask `
+                    -TaskName $autoRepairTaskName `
+                    -ErrorAction SilentlyContinue
+            ) {
+                Enable-ScheduledTask `
+                    -TaskName $autoRepairTaskName `
+                    -ErrorAction Stop |
+                    Out-Null
+            }
+        }
+        catch {
             $rollbackSucceeded = $false
         }
     }

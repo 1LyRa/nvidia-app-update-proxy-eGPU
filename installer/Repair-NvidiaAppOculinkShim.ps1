@@ -132,6 +132,20 @@ function Stop-NvidiaUserProcesses {
         Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
+
+function Stop-NvidiaUiProcesses {
+    $sessionId = (Get-Process -Id $PID).SessionId
+
+    foreach ($attempt in 1..12) {
+        Get-Process `
+            -Name 'NVIDIA App' `
+            -ErrorAction SilentlyContinue |
+            Where-Object { $_.SessionId -eq $sessionId } |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+
+        Start-Sleep -Milliseconds 250
+    }
+}
 function Stop-NvidiaLocalizedConfigService {
     Stop-Service `
         -Name $nvidiaLocalSystemService `
@@ -144,11 +158,17 @@ function Stop-NvidiaLocalizedConfigService {
 }
 
 function Start-NvidiaLocalizedConfigService {
-    Start-Service -Name $nvidiaLocalSystemService -ErrorAction Stop
+    Start-Service `
+        -Name $nvidiaLocalSystemService `
+        -ErrorAction Stop
+
     (Get-Service -Name $nvidiaLocalSystemService).WaitForStatus(
         [ServiceProcess.ServiceControllerStatus]::Running,
         [TimeSpan]::FromSeconds(20)
     )
+
+    Start-Sleep -Milliseconds 750
+    Stop-NvidiaUiProcesses
 }
 
 function Wait-ForV4Health {
@@ -174,13 +194,14 @@ function Wait-ForV4Health {
         throw 'The repaired v4 service did not become healthy.'
     }
 
+    $windowsVersion = [Environment]::OSVersion.Version
     $payload = [ordered]@{
         gcV = '11.0.8.299'
         lg = '1033'
         gLg = 'en-US'
         dIDa = @(Get-PresentNvidiaDeviceIds)
-        osC = '10.0.26200'
-        osB = '8973'
+        osC = "$($windowsVersion.Major).$($windowsVersion.Minor)"
+        osB = [string]$windowsVersion.Build
         is6 = '1'
         GFPV = '0'
         dch = '1'
@@ -493,6 +514,9 @@ try {
         -LiteralPath (Join-Path $runtimeRoot 'repair-error.log') `
         -Force `
         -ErrorAction SilentlyContinue
+    Install-NvidiaAppAutoRepairTask `
+        -InstallRoot $installRoot
+
 } catch {
     $failure = $_
     if ($serviceStopped -or $binaryReplaced -or $profileReplaced -or $localizedReplaced) {

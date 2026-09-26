@@ -5,7 +5,6 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$appExe = 'C:\Program Files\NVIDIA Corporation\NVIDIA App\CEF\NVIDIA App.exe'
 $programData = [Environment]::GetFolderPath(
     [Environment+SpecialFolder]::CommonApplicationData
 )
@@ -376,9 +375,6 @@ if (-not $ElevatedPhase) {
     ) {
         throw 'Post-migration protected state validation failed.'
     }
-    if (Test-Path -LiteralPath $appExe) {
-        Start-Process -FilePath $appExe
-    }
     Write-Output 'Migrated the NVIDIA App OCuLink bridge to the v4 Windows service.'
     Write-Output "NVIDIA currently recommends driver $($state.verifiedLatestVersion)."
     Write-Output 'The original protected NVIDIA configuration backups were preserved.'
@@ -547,6 +543,9 @@ try {
         -LiteralPath (Join-Path $runtimeRoot 'migration-error.log') `
         -Force `
         -ErrorAction SilentlyContinue
+    Install-NvidiaAppAutoRepairTask `
+        -InstallRoot $installRoot
+
 } catch {
     $failure = $_
     if ($serviceRegistered) {

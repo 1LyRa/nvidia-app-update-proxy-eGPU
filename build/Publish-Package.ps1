@@ -154,6 +154,7 @@ New-Item -ItemType Directory -Path $payloadRoot -Force | Out-Null
 Copy-Item -LiteralPath $serviceBinary -Destination $payloadRoot
 Copy-Item -LiteralPath $launcherBinary -Destination $packageRoot
 $installerFiles = @(
+    'AutoRepair-NvidiaAppOculinkShim.ps1',
     'Install-NvidiaAppOculinkShim.ps1',
     'Migrate-V3ToV4.ps1',
     'NvidiaAppOculinkShim.Common.psm1',

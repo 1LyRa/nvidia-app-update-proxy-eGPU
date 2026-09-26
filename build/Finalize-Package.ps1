@@ -169,6 +169,7 @@ if ($IncludeInstallerBatchFiles) {
 $signableRelativePaths = @(
     'NvidiaAppOculinkUpdateBridge.exe',
     'payload\NvidiaAppOculinkShim.exe',
+    'AutoRepair-NvidiaAppOculinkShim.ps1',
     'Install-NvidiaAppOculinkShim.ps1',
     'Migrate-V3ToV4.ps1',
     'MaintenanceManifest.ps1',

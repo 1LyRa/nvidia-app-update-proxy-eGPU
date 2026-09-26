@@ -338,13 +338,14 @@ if (
         Get-PresentNvidiaDeviceIds
     }
 )
+$windowsVersion = [Environment]::OSVersion.Version
 $payload = [ordered]@{
     gcV = '11.0.8.299'
     lg = '1033'
     gLg = 'en-US'
     dIDa = $detectedDeviceIds
-    osC = '10.0.26200'
-    osB = '8973'
+    osC = "$($windowsVersion.Major).$($windowsVersion.Minor)"
+    osB = [string]$windowsVersion.Build
     is6 = '1'
     GFPV = '0'
     dch = '1'
